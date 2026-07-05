@@ -4,6 +4,14 @@ import type { Context, Next } from "hono";
 
 export type AuthUser = { userId: string; role: string; name: string };
 
+// The internal secret gates every non-/healthz request between services and is
+// what makes the gateway's forwarded identity headers trustworthy. A missing
+// value in production would silently fall back to this public, source-visible
+// constant — fail fast instead (mirrors the AUTH_SECRET guard).
+if (!process.env.INTERNAL_API_SECRET && process.env.NODE_ENV === "production") {
+  throw new Error("INTERNAL_API_SECRET must be set in production");
+}
+
 const INTERNAL_SECRET = process.env.INTERNAL_API_SECRET ?? "dev-internal-secret";
 
 // Services are never exposed publicly; only the gateway is. Every request must
