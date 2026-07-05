@@ -23,7 +23,17 @@ export const DEFAULT_GRACE_MS = 24 * 60 * 60_000;
 const MEDIA_DIR = process.env.MEDIA_DIR ?? "./data";
 const NAMESPACES = new Set(["provider", "review"]);
 
+// A prefix is a single path segment chosen by the calling service ("uploads",
+// "reviews"). It is joined into the on-disk path and the Blob key, so it must
+// not be able to contain path separators or `..` — otherwise a caller that
+// derives the prefix from user input could write outside the namespace root
+// (local) or escape the per-namespace key scoping the sweep relies on (Blob).
+const PREFIX_RE = /^[a-zA-Z0-9_-]+$/;
+
 export class InvalidNamespaceError extends Error {}
+
+// Thrown when the prefix isn't a plain single-segment slug — mapped to 400.
+export class InvalidPrefixError extends Error {}
 
 // Thrown when a payload does not decode as a real JPEG/PNG/WebP — callers
 // translate it into a 400.
@@ -70,6 +80,9 @@ export async function storeFile(
 ): Promise<string> {
   if (!NAMESPACES.has(namespace)) {
     throw new InvalidNamespaceError(`unknown namespace: ${namespace}`);
+  }
+  if (!PREFIX_RE.test(prefix)) {
+    throw new InvalidPrefixError(`invalid prefix: ${prefix}`);
   }
   const { data, ext } = await processImage(buffer);
   const filename = `${crypto.randomUUID()}.${ext}`;

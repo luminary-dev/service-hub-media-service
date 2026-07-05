@@ -7,6 +7,8 @@ import {
   deleteFile,
   InvalidImageError,
   InvalidNamespaceError,
+  InvalidPrefixError,
+  MAX_UPLOAD_SIZE,
   sweep,
   storeFile,
 } from "../lib/media";
@@ -27,6 +29,11 @@ internalRoutes.post("/internal/media/store", async (c) => {
   ) {
     return c.json({ error: "Invalid input" }, 400);
   }
+  // Reject oversized uploads before reading the whole file into memory and
+  // handing it to sharp (defence-in-depth behind the gateway's body limit).
+  if (file.size > MAX_UPLOAD_SIZE) {
+    return c.json({ error: "File too large" }, 413);
+  }
   try {
     const url = await storeFile(
       namespace,
@@ -36,7 +43,7 @@ internalRoutes.post("/internal/media/store", async (c) => {
     return c.json({ url });
   } catch (e) {
     if (e instanceof InvalidImageError) return c.json({ error: e.message }, 400);
-    if (e instanceof InvalidNamespaceError) {
+    if (e instanceof InvalidNamespaceError || e instanceof InvalidPrefixError) {
       return c.json({ error: "Invalid input" }, 400);
     }
     throw e;
