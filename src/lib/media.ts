@@ -8,6 +8,14 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { put, del, list } from "@vercel/blob";
 import sharp from "sharp";
+import { r2Enabled, r2Put, r2Delete, r2List } from "./r2";
+
+// Processed uploads are always one of these three formats (see processImage).
+const MIME: Record<string, string> = {
+  jpg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+};
 
 export const MAX_UPLOAD_SIZE = 5 * 1024 * 1024; // 5MB
 export const ALLOWED_IMAGE_TYPES = new Set([
@@ -29,6 +37,10 @@ const NAMESPACES = new Set(["provider", "review"]);
 // derives the prefix from user input could write outside the namespace root
 // (local) or escape the per-namespace key scoping the sweep relies on (Blob).
 const PREFIX_RE = /^[a-zA-Z0-9_-]+$/;
+
+export function isKnownNamespace(namespace: string): boolean {
+  return NAMESPACES.has(namespace);
+}
 
 export class InvalidNamespaceError extends Error {}
 
@@ -86,6 +98,14 @@ export async function storeFile(
   }
   const { data, ext } = await processImage(buffer);
   const filename = `${crypto.randomUUID()}.${ext}`;
+  // R2 (private bucket): store under the namespaced key and return the internal
+  // /api/files URL — objects are streamed back through the /files route, so the
+  // stored URL shape matches local disk (no public bucket / domain needed).
+  if (r2Enabled()) {
+    const key = `${namespace}/${prefix}/${filename}`;
+    await r2Put(key, data, MIME[ext] ?? "application/octet-stream");
+    return `/api/files/${key}`;
+  }
   if (process.env.BLOB_READ_WRITE_TOKEN) {
     // Namespaced key so the per-namespace sweep can scope safely on a shared
     // Blob store.
@@ -106,6 +126,10 @@ export async function deleteFile(url: string): Promise<void> {
   try {
     const m = /^\/api\/files\/([a-z]+)\/(.+)$/.exec(url);
     if (m && NAMESPACES.has(m[1])) {
+      if (r2Enabled()) {
+        await r2Delete(`${m[1]}/${m[2]}`);
+        return;
+      }
       const target = resolveFilePath(m[1], m[2]);
       if (target) await unlink(target);
       return;
@@ -209,13 +233,29 @@ export async function sweep(
   if (!NAMESPACES.has(namespace)) {
     throw new InvalidNamespaceError(`unknown namespace: ${namespace}`);
   }
-  const useBlob = Boolean(process.env.BLOB_READ_WRITE_TOKEN);
-  const files = useBlob ? await listBlob(namespace) : await listLocal(namespace);
+  const useR2 = r2Enabled();
+  const useBlob = !useR2 && Boolean(process.env.BLOB_READ_WRITE_TOKEN);
+  let files: StoredFile[];
+  if (useR2) {
+    // key IS the storage key; url mirrors the stored /api/files/... form so it
+    // matches the caller's referenced set.
+    files = (await r2List(`${namespace}/`)).map((o) => ({
+      key: o.key,
+      url: `/api/files/${o.key}`,
+      modifiedAt: o.modifiedAt,
+    }));
+  } else if (useBlob) {
+    files = await listBlob(namespace);
+  } else {
+    files = await listLocal(namespace);
+  }
   const orphans = findOrphans(files, referenced, graceMs);
   let removed = 0;
   for (const f of orphans) {
     try {
-      if (useBlob) {
+      if (useR2) {
+        await r2Delete(f.key);
+      } else if (useBlob) {
         await del(f.url);
       } else {
         await unlink(f.key);
