@@ -19,7 +19,7 @@
     "@vercel/blob": "^2.5.0",
     "hono": "^4.13.13",
     "sharp": "^0.35.4",
-    "zod": "^4.4.3"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@types/node": "26.1.0",
